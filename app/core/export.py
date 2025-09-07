@@ -1,175 +1,174 @@
 """
-Export functionality for images and metadata
+Robust export pipeline (DICOM/regular images) with a backward-compatible config.
+
+- ExportConfig now has a default out_dir (~/FundusReaderWriter-Exports)
+- Back-compat alias: config.export_dir (getter + setter)
+- Exporter.create_layout() creates images/ and metadata/ and metadata.jsonl (optional)
 """
+
+from __future__ import annotations
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-import json
-import csv
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Protocol, runtime_checkable
 import logging
-from .dicom_io import DicomFile, DicomDirectory
 
 logger = logging.getLogger(__name__)
 
+# orjson is optional; fall back to stdlib json
+try:
+    import orjson
+    def _dumps_line(obj: Dict[str, Any]) -> bytes:
+        return orjson.dumps(obj) + b"\n"
+except Exception:
+    import json
+    def _dumps_line(obj: Dict[str, Any]) -> bytes:
+        return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+# --- Protocols for duck-typing (works with your DicomFile and RegularImage) ---
+
+@runtime_checkable
+class _Exportable(Protocol):
+    file_path: Path
+    picture_uid: Optional[str]
+    metadata: Dict[str, Any]
+
+    def export_image(self, output_path: Path, format: str = "TIFF") -> Path: ...
+    def get_metadata_for_export(self, deidentify: bool = False) -> Dict[str, Any]: ...
+
+
+@dataclass
+class ExportConfig:
+    # NEW: give out_dir a safe default so UI can call ExportConfig() with no args
+    out_dir: Path = field(default_factory=lambda: Path.home() / "FundusReaderWriter-Exports")
+
+    # Layout
+    images_subdir: str = "images"
+    metadata_subdir: str = "metadata"
+
+    # Options
+    image_format: str = "TIFF"
+    overwrite: bool = True
+    include_phi: bool = True
+    write_sidecar_json: bool = True
+    combine_metadata_jsonl: bool = True
+
+    # --- Back-compat alias used by the UI (getter + setter) ---
+    @property
+    def export_dir(self) -> Path:
+        """Legacy alias so older UI code that reads `config.export_dir` keeps working."""
+        return self.out_dir
+
+    @export_dir.setter
+    def export_dir(self, value: Path) -> None:
+        """Allow the UI to assign a Path (or str) to `config.export_dir`."""
+        self.out_dir = Path(value)
+
+    # Helpers
+    def images_dir(self) -> Path:
+        return self.out_dir / self.images_subdir
+
+    def metadata_dir(self) -> Path:
+        return self.out_dir / self.metadata_subdir
+
+    def jsonl_path(self) -> Path:
+        return self.out_dir / "metadata.jsonl"
+
+    def ensure_dirs(self) -> None:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.images_dir().mkdir(parents=True, exist_ok=True)
+        self.metadata_dir().mkdir(parents=True, exist_ok=True)
+
 
 class Exporter:
-    """Handle export operations for DICOM files"""
-    
-    def __init__(self, export_dir: Path):
-        self.export_dir = export_dir
-        self.images_dir = export_dir / "images"
-        self.metadata_path = export_dir / "metadata.jsonl"
-        self.csv_path = export_dir / "metadata.csv"
-        self._setup_directories()
-    
-    def _setup_directories(self):
-        """Create export directories"""
-        self.export_dir.mkdir(parents=True, exist_ok=True)
-        self.images_dir.mkdir(exist_ok=True)
-        logger.info(f"Export directories created at {self.export_dir}")
-    
-    def export_single_image(self, dicom_file: DicomFile) -> Path:
-        """Export a single DICOM image as TIFF"""        
-        # Ensure Picture UID exists first (before any DICOM operations)
-        if not dicom_file.picture_uid:
-            dicom_file.generate_picture_uid()
-        
-        # Export image with Picture UID as filename
-        output_path = self.images_dir / f"{dicom_file.picture_uid}.tiff"
-        dicom_file.export_image(output_path, format="TIFF")
-        logger.info(f"Exported image to {output_path}")
-        return output_path
-    
-    def export_metadata(self, dicom_files: List[DicomFile], 
-                       deidentify: bool = False,
-                       export_csv: bool = False) -> Dict[str, Path]:
-        """Export metadata for multiple DICOM files"""
-        results = {"jsonl": self.metadata_path}
-        
-        # Collect all metadata
-        all_metadata = []
-        for dicom_file in dicom_files:
-            metadata = dicom_file.get_metadata_for_export(deidentify)
-            
-            # Add export image filename if Picture UID exists
-            if dicom_file.picture_uid:
-                metadata["export_image"] = f"{dicom_file.picture_uid}.tiff"
-            
-            all_metadata.append(metadata)
-        
-        # Write JSON Lines
-        with open(self.metadata_path, 'w', encoding='utf-8') as f:
-            for metadata in all_metadata:
-                f.write(json.dumps(metadata, default=str) + '\n')
-        
-        logger.info(f"Exported metadata to {self.metadata_path}")
-        
-        # Optionally export CSV
-        if export_csv and all_metadata:
-            results["csv"] = self._export_csv(all_metadata)
-        
-        return results
-    
-    def _export_csv(self, metadata_list: List[Dict[str, Any]]) -> Path:
-        """Export metadata as CSV"""
-        if not metadata_list:
-            return self.csv_path
-        
-        # Get all unique keys across all metadata
-        all_keys = set()
-        for metadata in metadata_list:
-            all_keys.update(metadata.keys())
-        
-        # Sort keys for consistent column order
-        fieldnames = sorted(all_keys)
-        
-        # Write CSV
-        with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for metadata in metadata_list:
-                # Convert all values to strings for CSV
-                row = {k: str(v) if v is not None else '' for k, v in metadata.items()}
-                writer.writerow(row)
-        
-        logger.info(f"Exported CSV to {self.csv_path}")
-        return self.csv_path
-    
-    def bulk_export(self, dicom_directory: DicomDirectory,
-                   deidentify: bool = False,
-                   export_csv: bool = False,
-                   write_uids: bool = False,
-                   progress_callback=None) -> Dict[str, Any]:
-        """Bulk export all DICOM files in directory"""
-        results = {
-            "images": [],
-            "metadata": None,
-            "errors": []
-        }
-        
-        total_files = dicom_directory.get_file_count()
-        
-        # Process each DICOM file
-        for i, dicom_file in enumerate(dicom_directory.dicom_files):
-            try:
-                # Update progress
-                if progress_callback:
-                    progress_callback(i + 1, total_files, f"Processing {dicom_file.file_path.name}")
-                
-                # Pre-load pixel data to cache the full dataset (fixes first-try failures)
-                _ = dicom_file.get_pixel_array()
-                
-                # Ensure Picture UID
-                if not dicom_file.picture_uid:
-                    dicom_file.generate_picture_uid()
-                    if write_uids:
-                        dicom_file.write_picture_uid(save=True)
-                
-                # Export image
-                image_path = self.export_single_image(dicom_file)
-                results["images"].append(str(image_path))
-                
-            except Exception as e:
-                error_msg = f"Failed to export {dicom_file.file_path.name}: {e}"
-                logger.error(error_msg)
-                results["errors"].append(error_msg)
-        
-        # Export metadata
+    def __init__(self, config: ExportConfig):
+        self.config = config
+
+    # Public API ---------------------------------------------------------------
+
+    def export_bulk(self, items: Iterable[_Exportable]) -> int:
+        """
+        Export many items (DicomFile or RegularImage). Returns count exported.
+        """
+        cfg = self.config
+        cfg.ensure_dirs()
+        logger.info(f"Export directories created at {cfg.out_dir}")
+
+        # Prepare JSONL stream (optional)
+        jsonl_fh = None
+        if cfg.combine_metadata_jsonl:
+            jsonl_path = cfg.jsonl_path()
+            if jsonl_path.exists() and cfg.overwrite:
+                try:
+                    jsonl_path.unlink()
+                except Exception:
+                    pass
+            jsonl_fh = open(jsonl_path, "ab")
+
+        exported = 0
         try:
-            metadata_paths = self.export_metadata(
-                dicom_directory.dicom_files,
-                deidentify=deidentify,
-                export_csv=export_csv
-            )
-            results["metadata"] = {k: str(v) for k, v in metadata_paths.items()}
-        except Exception as e:
-            error_msg = f"Failed to export metadata: {e}"
-            logger.error(error_msg)
-            results["errors"].append(error_msg)
-        
-        return results
+            for item in items:
+                try:
+                    img_path, sidecar = self._export_single(item)
+                    exported += 1
+                    logger.info(f"Successfully exported image to {img_path}")
+                    if sidecar:
+                        logger.debug(f"Wrote sidecar {sidecar}")
 
+                    if jsonl_fh:
+                        md = self._prepare_metadata(item)
+                        jsonl_fh.write(_dumps_line(md))
+                except Exception as e:
+                    logger.warning(f"Failed to export {getattr(item, 'file_path', 'item')}: {e}")
+                    continue
+        finally:
+            if jsonl_fh:
+                jsonl_fh.close()
+                logger.info(f"Exported combined metadata to {self.config.jsonl_path()}")
 
-class ExportConfig:
-    """Configuration for export operations"""
-    
-    def __init__(self):
-        self.deidentify = False
-        self.export_csv = False
-        self.write_uids_to_dicom = False
-        self.export_dir = Path("exports")
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        return {
-            "deidentify": self.deidentify,
-            "export_csv": self.export_csv,
-            "write_uids_to_dicom": self.write_uids_to_dicom,
-            "export_dir": str(self.export_dir)
-        }
-    
-    def from_dict(self, data: Dict[str, Any]):
-        """Load from dictionary"""
-        self.deidentify = data.get("deidentify", False)
-        self.export_csv = data.get("export_csv", False)
-        self.write_uids_to_dicom = data.get("write_uids_to_dicom", False)
-        self.export_dir = Path(data.get("export_dir", "exports"))
+        return exported
+
+    def export_one(self, item: _Exportable) -> Tuple[Path, Optional[Path]]:
+        """Export a single item and return (image_path, sidecar_json_path|None)."""
+        self.config.ensure_dirs()
+        return self._export_single(item)
+
+    # Internals ----------------------------------------------------------------
+
+    def _export_single(self, item: _Exportable) -> Tuple[Path, Optional[Path]]:
+        cfg = self.config
+
+        # Choose a stable file stem: prefer the item's picture_uid, else use stem
+        stem = getattr(item, "picture_uid", None) or Path(getattr(item, "file_path")).stem
+
+        # Image path
+        ext = (cfg.image_format or "TIFF").upper()
+        if ext == "TIFF":
+            suffix = ".tiff"
+        else:
+            suffix = "." + ext.lower()
+        img_path = cfg.images_dir() / f"{stem}{suffix}"
+
+        # Overwrite policy
+        if img_path.exists() and not cfg.overwrite:
+            raise RuntimeError(f"Refusing to overwrite existing file: {img_path}")
+
+        # Do the export (duck-typed)
+        item.export_image(img_path, format=cfg.image_format)
+
+        # Sidecar JSON (optional)
+        sidecar_path: Optional[Path] = None
+        if cfg.write_sidecar_json:
+            sidecar_path = cfg.metadata_dir() / f"{stem}.json"
+            md = self._prepare_metadata(item)
+            sidecar_path.write_bytes(_dumps_line(md).rstrip(b"\n"))
+
+        return img_path, sidecar_path
+
+    def _prepare_metadata(self, item: _Exportable) -> Dict[str, Any]:
+        md = item.get_metadata_for_export(deidentify=not self.config.include_phi)
+        # Ensure some common fields exist
+        md.setdefault("export_image", (self.config.images_dir() / f"{(getattr(item, 'picture_uid', None) or Path(item.file_path).stem)}.tiff").name)
+        if getattr(item, "picture_uid", None):
+            md.setdefault("picture_uid", item.picture_uid)
+        return md

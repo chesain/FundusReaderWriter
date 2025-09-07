@@ -1,8 +1,22 @@
-PyQt6>=6.4.0
-pydicom>=2.4.0
-Pillow>=10.0.0
+# GUI
+PyQt6>=6.5
+
+# Imaging
+Pillow>=10.3
+numpy>=1.26
+tifffile>=2024.2.12
+imagecodecs>=2024.1.1
+
+# DICOM
+pydicom>=2.4.4
 pylibjpeg>=2.0.0
 pylibjpeg-libjpeg>=2.0.0
 pylibjpeg-openjpeg>=2.0.0
-numpy>=1.24.0
-pandas>=2.0.0
+
+# Metadata helpers
+exifread>=3.0.0
+python-xmp-toolkit>=2.0.2
+orjson>=3.9.15
+
+# Optional ExifTool bridge (gracefully degrades if exiftool not on PATH)
+pyexiftool>=0.5.6
