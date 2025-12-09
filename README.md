@@ -1,6 +1,6 @@
 # DICOM / TIFF Reader & Writer
 
-A lightweight desktop app (PyQt6) for **reading** DICOM and TIFF fundus images, viewing pixels, and **writing** exports (TIFF + per-image JSON sidecars). It shows a DICOM-style metadata panel and can batch-export images with stable filenames (using the SOP Instance UID when available).
+A lightweight desktop app (PyQt6) for reading DICOM and TIFF fundus images, viewing pixels, and writing exports (TIFF + per-image JSON sidecars). It shows a DICOM-style metadata panel and can batch-export images with stable filenames (using the SOP Instance UID when available).
 
 ---
 
@@ -71,7 +71,7 @@ python run_app.py
 ### Write (exports)
 
 - **Export Current**: saves one image to `<chosen>/images/<stem>.tiff` and sidecar `<stem>.json`
-- **Bulk Export…**: exports all loaded items to the same `images/` folder with **no overwrite** (adds `-2`, `-3`, … when needed)
+- **Bulk Export…**: exports all loaded items to the same `images/` folder with no overwrite (adds `-2`, `-3`, … when needed)
 
 **Export naming**
 
@@ -92,7 +92,7 @@ Each export writes:
 ## Patient Age logic
 
 The panel shows **PatientAge** from the DICOM tag if available.  
-If missing, the app computes age (in years) from **Birth Date** and the best available date among **Study Date** or **Acquisition Date**.
+If missing, the app computes age (in years) from Birth Date and the best available date among Study Date or Acquisition Date.
 
 ---
 
@@ -128,6 +128,6 @@ FundusReaderWriter/
 - **No pixel shown for DICOM**  
   Some compressed transfer syntaxes require optional plugins. This app preconfigures common pydicom handlers and will fall back gracefully. If a specific file still fails, ensure JPEG plugins are installed (see `requirements.txt`) and try again.
 - **TIFF metadata empty**  
-  The app merges embedded XMP/TIFF tags **and** per-image JSON sidecars. Ensure the exported JSON files are next to the TIFFs (same basename) or under a nearby `metadata/` folder.
+  The app merges embedded XMP/TIFF tags and per-image JSON sidecars. Ensure the exported JSON files are next to the TIFFs (same basename) or under a nearby `metadata/` folder.
 
 ---
